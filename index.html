@@ -1,0 +1,153 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <title>Transformación de Coordenadas a Pixel</title>
+  <style>
+    body { font-family: Arial, sans-serif; }
+    #mapContainer { position: relative; width: 800px; margin: auto; }
+    /* El tamaño del contenedor dependerá de tu imagen. Ajusta según sea necesario */
+    #mapImg { width: 100%; display: block; }
+    .marker {
+      position: absolute;
+      width: 12px;
+      height: 12px;
+      border-radius: 50%;
+      border: 1px solid black;
+    }
+  </style>
+</head>
+<body>
+  <h1>Mapeo de Eventos sobre la Plantilla PNG</h1>
+  <p>Este ejemplo usa una transformación calculada a partir de 4 puntos de control fijos.</p>
+  
+  <div id="mapContainer">
+    <!-- Aquí se especifica la plantilla PNG. Asegúrate de que el archivo "mapa_plantilla.png" esté en la misma carpeta -->
+    <img id="mapImg" src="mapa_plantilla.png" alt="Mapa de CDMX">
+  </div>
+  
+  <script>
+    /***** Puntos de control *****/
+    // Nota: Para el cálculo de la homografía usaremos la convención:
+    // srcPoints: puntos en coordenadas geográficas (x = lon, y = lat)
+    // dstPoints: puntos en píxeles en la imagen
+    const srcPoints = [
+      // Tus puntos: (lat, lon) los convertimos a (x: lon, y: lat)
+      { x: -99.24322321, y: 19.35810519 },
+      { x: -99.25566,    y: 19.32702    },
+      { x: -98.98301473, y: 19.21595802 },
+      { x: -99.087433,   y: 19.443727   }
+    ];
+
+    const dstPoints = [
+      { x: 60.7999,  y: 123.081 },
+      { x: 54.7369,  y: 138.311 },
+      { x: 188.055,  y: 192.519 },
+      { x: 137.035,  y: 81.1605 }
+    ];
+
+    /***** Funciones para calcular la homografía *****/
+    // Resolver un sistema lineal A * x = b usando eliminación gaussiana
+    function solveLinearSystem(A, b) {
+      const n = b.length;
+      // Aumentamos A con b (extendemos cada fila)
+      for (let i = 0; i < n; i++) {
+        A[i].push(b[i]);
+      }
+      // Eliminación gaussiana
+      for (let i = 0; i < n; i++) {
+        // Encontrar el pivote
+        let maxRow = i;
+        for (let k = i + 1; k < n; k++) {
+          if (Math.abs(A[k][i]) > Math.abs(A[maxRow][i])) {
+            maxRow = k;
+          }
+        }
+        // Intercambiar filas
+        [A[i], A[maxRow]] = [A[maxRow], A[i]];
+        if (Math.abs(A[i][i]) < 1e-10) {
+          throw new Error("La matriz es singular");
+        }
+        // Eliminar las variables en filas inferiores
+        for (let k = i + 1; k < n; k++) {
+          const factor = A[k][i] / A[i][i];
+          for (let j = i; j < n + 1; j++) {
+            A[k][j] -= factor * A[i][j];
+          }
+        }
+      }
+      // Sustitución hacia atrás
+      const x = new Array(n);
+      for (let i = n - 1; i >= 0; i--) {
+        let sum = A[i][n];
+        for (let j = i + 1; j < n; j++) {
+          sum -= A[i][j] * x[j];
+        }
+        x[i] = sum / A[i][i];
+      }
+      return x;
+    }
+
+    // Calcula la matriz de homografía H (3x3) tal que:
+    // [x, y, 1]^T ~ H * [lon, lat, 1]^T, usando h33 = 1
+    function computeHomography(src, dst) {
+      const A = [];
+      const b = [];
+      for (let i = 0; i < 4; i++) {
+        const X = src[i].x, Y = src[i].y;
+        const x = dst[i].x, y = dst[i].y;
+        // Dos ecuaciones por cada par
+        A.push([X, Y, 1, 0, 0, 0, -x * X, -x * Y]);
+        A.push([0, 0, 0, X, Y, 1, -y * X, -y * Y]);
+        b.push(x);
+        b.push(y);
+      }
+      const h = solveLinearSystem(A, b);
+      h.push(1); // h33 = 1
+      // Retornar H como una matriz 3x3
+      return [
+        [h[0], h[1], h[2]],
+        [h[3], h[4], h[5]],
+        [h[6], h[7], h[8]]
+      ];
+    }
+
+    // Aplica la homografía H a un punto dado (lon, lat)
+    function applyHomography(H, pt) {
+      // pt: { x: lon, y: lat }
+      const X = pt.x, Y = pt.y;
+      const denom = H[2][0] * X + H[2][1] * Y + H[2][2];
+      const x = (H[0][0] * X + H[0][1] * Y + H[0][2]) / denom;
+      const y = (H[1][0] * X + H[1][1] * Y + H[1][2]) / denom;
+      return { x, y };
+    }
+
+    // Calcula la matriz de homografía usando los puntos de control
+    const H = computeHomography(srcPoints, dstPoints);
+    console.log("Matriz de Homografía:", H);
+
+    /***** Función para marcar eventos *****/
+    function marcarEvento(lat, lon, color = "red") {
+      // Recuerda: para nuestra función, convertimos a {x: lon, y: lat}
+      const ptGeo = { x: lon, y: lat };
+      const ptPixel = applyHomography(H, ptGeo);
+      
+      const marker = document.createElement("div");
+      marker.className = "marker";
+      marker.style.backgroundColor = color;
+      // Ajusta la posición para centrar el marcador (12px de tamaño)
+      marker.style.left = (ptPixel.x - 6) + "px";
+      marker.style.top = (ptPixel.y - 6) + "px";
+      
+      document.getElementById("mapContainer").appendChild(marker);
+    }
+
+    /***** Ejemplo de uso *****/
+    // Por ejemplo, marcar un evento en CDMX con coordenadas (lat, lon) = (19.4326, -99.1332)
+    // Recuerda que para aplicar la transformación, se asume que el PNG es fijo y los puntos de control definidos son válidos.
+    marcarEvento(19.4326, -99.1332, "blue");
+
+    // Puedes agregar más llamadas a marcarEvento(lat, lon, color) según tus necesidades.
+  </script>
+</body>
+</html>
